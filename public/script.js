@@ -5,8 +5,10 @@ const TABS = { overview: 'Overview', battery: 'Battery', maps: 'Map & geofence' 
 const OFFLINE_MS = 120000, LOW_SOC = 20, HOT_C = 45;
 let token = localStorage.getItem('ev_token'), me = null, vehicles = [], selId = null, lastId = null, filter = 'all', query = '', mode = 'login', tick = 0, pollTimer = null, curTab = 'fleet', pendingUsers = [], breached = new Set();
 
-async function api(path, opt = {}) {
-  const r = await fetch(path, { method: opt.method || 'GET', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: opt.body ? JSON.stringify(opt.body) : undefined });
+async function api(path, opt = {}, retry = true) {
+  let r; try { r = await fetch(path, { method: opt.method || 'GET', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: opt.body ? JSON.stringify(opt.body) : undefined }); }
+  catch (e) { if (retry && !opt.method) { await new Promise(x => setTimeout(x, 1500)); return api(path, opt, false); } throw new Error('Cannot reach the server. Check your connection.'); }
+  if (r.status === 503 && retry) { await new Promise(x => setTimeout(x, 1500)); return api(path, opt, false); }
   let d = {}; try { d = await r.json(); } catch {}
   if (r.status === 401 && token) { logout(true); throw new Error('Session expired. Please sign in again.'); }
   if (!r.ok) throw new Error(d.error || 'Request failed (' + r.status + ')');
@@ -268,4 +270,12 @@ if (localStorage.getItem('ev_theme') === 'dark') document.body.dataset.theme = '
 
 // ── Boot ──
 setMode('login');
-if (token) api('/api/me').then(u => { me = u; startApp(); }).catch(() => { token = null; localStorage.removeItem('ev_token'); document.body.dataset.view = 'auth'; });
+async function boot(n = 0) {
+  try { me = await api('/api/me'); startApp(); }
+  catch (e) {
+    if (!token) { document.body.dataset.view = 'auth'; return; }   // 401: api() already signed out
+    if (n < 2) { setTimeout(() => boot(n + 1), 2000); return; }      // server hiccup: keep the session, retry
+    document.body.dataset.view = 'auth'; setMsg('auth-msg', 'The server is not responding. Reload to try again — your session is kept.');
+  }
+}
+if (token) boot();
